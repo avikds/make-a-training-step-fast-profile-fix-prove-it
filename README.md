@@ -19,7 +19,7 @@ python scaffold.py
 - [x] **7.** dynamic_loss_scale
 - [x] **8.** bucket_allreduce
 - [x] **9.** plan_parallelism
-- [ ] **10.** compare_runs
+- [x] **10.** compare_runs
 - [ ] **11.** speedup_report
 - [ ] **12.** release_check
 

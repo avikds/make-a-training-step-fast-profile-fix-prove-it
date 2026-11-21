@@ -901,8 +901,48 @@ def plan_parallelism(model, cluster):
         "rejected": rejected
     }
 
-# Step 10 - compare_runs (not yet solved)
-# TODO: implement
+# Step 10 - compare_runs
+def compare_runs(base_times, cand_times, warmup=2):
+    """Compare benchmark medians and determine whether the speedup is measurable."""
+
+    # Summarize baseline and candidate timings after removing warmup runs.
+    base_stats = summarize_runs(base_times, warmup)
+    cand_stats = summarize_runs(cand_times, warmup)
+
+    # Extract the median execution times.
+    base = base_stats["median"]
+    cand = cand_stats["median"]
+
+    # Handle cases where no measurements remain after warmup.
+    if base is None or cand is None:
+        return {
+            "speedup": None,
+            "verdict": "no measurable change",
+            "base": base,
+            "cand": cand
+        }
+
+    # Calculate the speedup relative to the baseline.
+    speedup = float(base / cand) if cand != 0 else None
+
+    # Determine whether the candidate is measurably faster or slower.
+    # Comparisons are strict, as required.
+    if cand_stats["q3"] < base_stats["q1"]:
+        verdict = "faster"
+
+    elif cand_stats["q1"] > base_stats["q3"]:
+        verdict = "slower"
+
+    else:
+        verdict = "no measurable change"
+
+    # Return the speedup, verdict and both median timings.
+    return {
+        "speedup": speedup,
+        "verdict": verdict,
+        "base": base,
+        "cand": cand
+    }
 
 # Step 11 - speedup_report (not yet solved)
 # TODO: implement
