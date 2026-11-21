@@ -21,7 +21,6 @@ BYTES = {"fp32": 4, "bf16": 2, "fp16": 2, "fp8": 1}
 LINK = {"gpus": 8, "latency_us": 20.0, "bandwidth_gbs": 50.0}
 
 MODEL = {"layers": 4, "d": 512}
-
 MAX_LEN = 512
 
 LENGTHS = [512, 497, 431, 388, 342, 301, 266, 240, 213, 190, 171, 160, 148, 139, 130, 122, 115, 108, 101, 96, 90, 85,
@@ -41,44 +40,20 @@ def allreduce_us(nbytes, link=LINK):
 
 
 def _ew(name, group, phase, reads, size, flops, precision, grads=()):
-    return {
-        "name": name,
-        "group": group,
-        "kind": "elementwise",
-        "phase": phase,
-        "reads": reads,
-        "size": size,
-        "flops": flops,
-        "bytes": (reads + 1) * size,
-        "precision": precision,
-        "grads": list(grads)
-    }
+    return {"name": name, "group": group, "kind": "elementwise", "phase": phase, "reads": reads, "size": size,
+            "flops": flops, "bytes": (reads + 1) * size, "precision": precision, "grads": list(grads)}
 
 
 def _mm(name, group, phase, flops, nbytes, precision, kind="matmul", grads=()):
-    return {
-        "name": name,
-        "group": group,
-        "kind": kind,
-        "phase": phase,
-        "flops": flops,
-        "bytes": nbytes,
-        "precision": precision,
-        "grads": list(grads)
-    }
+    return {"name": name, "group": group, "kind": kind, "phase": phase, "flops": flops, "bytes": nbytes,
+            "precision": precision, "grads": list(grads)}
 
 
 def build_ops(tokens, attn_pairs, precision):
     """The kernels of one training step in launch order: forward, backward, then the optimizer."""
     d, e, T = MODEL["d"], BYTES[precision], tokens
     fwd, bwd_layers = [], []
-
-    shapes = {
-        "qkv": (d, 3 * d),
-        "proj": (d, d),
-        "up": (d, 4 * d),
-        "down": (4 * d, d)
-    }
+    shapes = {"qkv": (d, 3 * d), "proj": (d, d), "up": (d, 4 * d), "down": (4 * d, d)}
 
     for i in range(MODEL["layers"]):
         p = f"L{i}."
@@ -87,104 +62,50 @@ def build_ops(tokens, attn_pairs, precision):
         for w in ("qkv", "attn", "proj", "add1", "norm1", "up", "gelu", "down", "add2", "norm2"):
             if w in shapes:
                 a, b = shapes[w]
-                layer.append((
-                    "mm", w, 2 * T * a * b,
-                    e * (a * b + T * a + T * b),
-                    [(p + w, 4 * a * b)]
-                ))
-
+                layer.append(("mm", w, 2 * T * a * b, e * (a * b + T * a + T * b), [(p + w, 4 * a * b)]))
             elif w == "attn":
-                layer.append((
-                    "attn", w, 4 * d * attn_pairs,
-                    e * (T * 3 * d + T * d),
-                    []
-                ))
-
+                layer.append(("attn", w, 4 * d * attn_pairs, e * (T * 3 * d + T * d), []))
             elif w in ("add1", "add2"):
-                layer.append((
-                    "ew", w, 2,
-                    e * T * d,
-                    T * d,
-                    []
-                ))
-
+                layer.append(("ew", w, 2, e * T * d, T * d, []))
             elif w == "gelu":
-                layer.append((
-                    "ew", w, 1,
-                    e * T * 4 * d,
-                    8 * T * d,
-                    []
-                ))
-
+                layer.append(("ew", w, 1, e * T * 4 * d, 8 * T * d, []))
             else:
-                layer.append((
-                    "ew", w, 1,
-                    e * T * d,
-                    5 * T * d,
-                    [(p + w, 4 * d)]
-                ))
+                layer.append(("ew", w, 1, e * T * d, 5 * T * d, [(p + w, 4 * d)]))
 
         for spec in layer:
             if spec[0] == "ew":
-                fwd.append(_ew(
-                    p + spec[1], spec[1], "forward",
-                    spec[2], spec[3], spec[4], precision
-                ))
+                fwd.append(_ew(p + spec[1], spec[1], "forward", spec[2], spec[3], spec[4], precision))
             else:
-                fwd.append(_mm(
-                    p + spec[1], spec[1], "forward",
-                    spec[2], spec[3], precision,
-                    kind="matmul" if spec[0] == "mm" else "attention"
-                ))
+                fwd.append(_mm(p + spec[1], spec[1], "forward", spec[2], spec[3], precision,
+                               kind="matmul" if spec[0] == "mm" else "attention"))
 
         back = []
-
         for spec in reversed(layer):
             g = spec[1] + ".grad"
-
             if spec[0] == "ew":
-                back.append(_ew(
-                    p + g, g, "backward",
-                    spec[2] + 1, spec[3], 2 * spec[4],
-                    precision, spec[5]
-                ))
+                back.append(_ew(p + g, g, "backward", spec[2] + 1, spec[3], 2 * spec[4], precision, spec[5]))
             else:
-                back.append(_mm(
-                    p + g, g, "backward",
-                    2 * spec[2], 2 * spec[3], precision,
-                    kind="matmul" if spec[0] == "mm" else "attention",
-                    grads=spec[4]
-                ))
+                back.append(_mm(p + g, g, "backward", 2 * spec[2], 2 * spec[3], precision,
+                                kind="matmul" if spec[0] == "mm" else "attention", grads=spec[4]))
 
         bwd_layers.append(back)
 
     bwd = [op for back in reversed(bwd_layers) for op in back]
-
     opt = []
 
     for i in range(MODEL["layers"]):
         for w in ("qkv", "proj", "norm1", "up", "down", "norm2"):
             size = 4 * (shapes[w][0] * shapes[w][1] if w in shapes else d)
             n = size // 4
-
-            opt += [
-                _ew(f"L{i}.{w}.adam_m", "adam_m", "optimizer", 2, size, 3 * n, "fp32"),
-                _ew(f"L{i}.{w}.adam_v", "adam_v", "optimizer", 2, size, 4 * n, "fp32"),
-                _ew(f"L{i}.{w}.adam_step", "adam_step", "optimizer", 3, size, 6 * n, "fp32")
-            ]
+            opt += [_ew(f"L{i}.{w}.adam_m", "adam_m", "optimizer", 2, size, 3 * n, "fp32"),
+                    _ew(f"L{i}.{w}.adam_v", "adam_v", "optimizer", 2, size, 4 * n, "fp32"),
+                    _ew(f"L{i}.{w}.adam_step", "adam_step", "optimizer", 3, size, 6 * n, "fp32")]
 
     return fwd + bwd + opt
 
 
 def run_step(config):
-    """Simulate one steady-state training step on one of the 8 GPUs.
-
-    config: workers (data-loader processes, 0 = load in the training loop), precision,
-    and three optional hooks that later steps plug in:
-    pack (pack_sequences), fuse (fuse_elementwise), comm (bucket_allreduce).
-    Kernel durations come from YOUR op_cost.
-    """
-
+    """Simulate one steady-state step on one of the 8 GPUs."""
     precision = config.get("precision", "fp32")
 
     if config.get("pack"):
@@ -210,98 +131,56 @@ def run_step(config):
             else:
                 total = sum(g["bytes"] for g in grads)
                 start = max(g["ready"] for g in grads)
-
-                buckets = [{
-                    "params": [g["name"] for g in grads],
-                    "bytes": total,
-                    "start": start,
-                    "end": start + allreduce_us(total)
-                }]
+                buckets = [{"params": [g["name"] for g in grads], "bytes": total,
+                            "start": start, "end": start + allreduce_us(total)}]
 
             for k, b in enumerate(buckets):
-                trace.append({
-                    "lane": "comm",
-                    "name": f"allreduce_{k}",
-                    "kind": "collective",
-                    "start": b["start"],
-                    "end": b["end"]
-                })
+                trace.append({"lane": "comm", "name": f"allreduce_{k}", "kind": "collective",
+                              "start": b["start"], "end": b["end"]})
 
             comm_end = max(b["end"] for b in buckets)
 
-        trace.append({
-            "lane": "host",
-            "name": "launch " + op["name"],
-            "kind": "launch",
-            "start": host,
-            "end": host + GPU["launch_us"]
-        })
+        trace.append({"lane": "host", "name": "launch " + op["name"], "kind": "launch",
+                      "start": host, "end": host + GPU["launch_us"]})
 
         host += GPU["launch_us"]
-
         start = max(host, gpu, comm_end or 0.0)
         gpu = start + op_cost(op)["time_us"]
 
-        trace.append({
-            "lane": "gpu",
-            "name": op["name"],
-            "group": op["group"],
-            "kind": "kernel",
-            "phase": op["phase"],
-            "start": start,
-            "end": gpu
-        })
+        trace.append({"lane": "gpu", "name": op["name"], "group": op["group"], "kind": "kernel",
+                      "phase": op["phase"], "start": start, "end": gpu})
 
         for name, nbytes in op["grads"]:
-            grads.append({
-                "name": name,
-                "bytes": nbytes,
-                "ready": gpu
-            })
+            grads.append({"name": name, "bytes": nbytes, "ready": gpu})
 
     compute = max(e["end"] for e in trace)
-    wait = LOAD_US if config.get("workers", 0) == 0 else max(
-        0.0, LOAD_US / config["workers"] - compute
-    )
+    wait = LOAD_US if config.get("workers", 0) == 0 else max(0.0, LOAD_US / config["workers"] - compute)
 
     for e in trace:
         e["start"] += wait
         e["end"] += wait
 
-    trace.insert(0, {
-        "lane": "host",
-        "name": "next(batch)",
-        "kind": "dataloader_wait",
-        "start": 0.0,
-        "end": wait
-    })
+    trace.insert(0, {"lane": "host", "name": "next(batch)", "kind": "dataloader_wait",
+                     "start": 0.0, "end": wait})
 
-    return {
-        "trace": trace,
-        "step_us": wait + compute,
-        "tokens": tokens,
-        "kernels": len(ops)
-    }
+    return {"trace": trace, "step_us": wait + compute, "tokens": tokens, "kernels": len(ops)}
 
 
 def train_loss(config):
-    """Final loss of a full training run with this config (a stand-in for running it for real)."""
+    """Final loss of a full training run with this config."""
     precision = config.get("precision", "fp32")
 
     if precision == "fp16":
         res = config["scaler"](GRAD_STATS) if config.get("scaler") else None
-        lost = res["underflow_steps"] if res else sum(
-            lo < 2.0 ** -24 for _, lo in GRAD_STATS
-        )
+        lost = res["underflow_steps"] if res else sum(lo < 2.0 ** -24 for _, lo in GRAD_STATS)
         return round(2.0 + 0.002 + 0.4 * lost / len(GRAD_STATS), 4)
 
     return {"fp32": 2.0, "bf16": 2.0031, "fp8": 2.0688}[precision]
 
 
 def measure(config, runs=15, seed=0):
-    """Time runs training steps of this config the way a real timer would see them (microseconds)."""
+    """Time training steps using a noisy timer (microseconds)."""
     true = run_step(config)["step_us"]
-
     rng = np.random.default_rng(seed)
     out = []
 
@@ -309,12 +188,12 @@ def measure(config, runs=15, seed=0):
         t = true * (1 + 0.03 * rng.standard_normal())
 
         if k == 0:
-            t += 3.0 * true  # First step compiles kernels and fills caches.
+            t += 3.0 * true
         elif k == 1:
             t += 0.5 * true
 
         if rng.random() < 0.1:
-            t *= 1.4  # Simulate interference from another job.
+            t *= 1.4
 
         out.append(round(t, 1))
 
@@ -322,29 +201,27 @@ def measure(config, runs=15, seed=0):
 
 
 def op_cost(op, gpu=GPU):
-    """Calculate the roofline cost of one kernel in microseconds."""
+    """Calculate the Roofline cost of one GPU kernel."""
 
-    # Read the operation count, memory traffic, and precision.
-    flops = op["flops"]
-    nbytes = op["bytes"]
-    precision = op["precision"]
+    # Peak compute throughput for the kernel's precision.
+    tflops = gpu["tflops"][op["precision"]]
 
-    # Calculate compute time using peak throughput for the selected precision.
-    compute_us = flops / (gpu["tflops"][precision] * 1e6)
+    # Compute execution time in microseconds.
+    compute_us = op["flops"] / (tflops * 1e6)
 
-    # Calculate memory transfer time using the GPU memory bandwidth.
-    memory_us = nbytes / (gpu["bandwidth_gbs"] * 1e3)
+    # Memory transfer time in microseconds.
+    memory_us = op["bytes"] / (gpu["bandwidth_gbs"] * 1e3)
 
-    # Roofline execution time is determined by the slower resource.
+    # Roofline time is determined by the slower resource.
     time_us = max(compute_us, memory_us)
 
-    # A tie is classified as compute-bound, as required.
+    # Compute takes precedence when both times are equal.
     bound = "compute" if compute_us >= memory_us else "memory"
 
-    # Calculate arithmetic intensity in FLOPs per byte.
-    intensity = flops / nbytes
+    # Arithmetic intensity in FLOPs per byte.
+    intensity = op["flops"] / op["bytes"]
 
-    # IMPORTANT: Preserve the exact key order expected by the grader.
+    # Dictionary key order must match the expected output.
     return {
         "time_us": time_us,
         "compute_us": compute_us,
