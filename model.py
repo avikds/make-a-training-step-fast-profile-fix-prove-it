@@ -385,8 +385,54 @@ def analyze_trace(trace, launch_us=5.0, top=3):
         "verdict": verdict
     }
 
-# Step 3 - summarize_runs (not yet solved)
-# TODO: implement
+# Step 3 - summarize_runs
+def summarize_runs(times, warmup=2):
+    """Drop the warmup runs, then return n, median, q1, q3, iqr and mean."""
+
+    # Discard the initial warmup measurements.
+    # Convert the remaining timings to floating-point values.
+    measured = np.asarray(times[warmup:], dtype=float)
+
+    # Number of measurements retained after warmup.
+    n = int(len(measured))
+
+    # Handle cases where no measurements remain.
+    if n == 0:
+        return {
+            "n": 0,
+            "median": None,
+            "q1": None,
+            "q3": None,
+            "iqr": None,
+            "mean": None
+        }
+
+    # Calculate the median execution time.
+    median = float(np.median(measured))
+
+    # Calculate the 25th and 75th percentiles.
+    # NumPy uses linear interpolation by default.
+    q1, q3 = np.percentile(measured, [25, 75])
+
+    # Convert percentile results into standard Python floats.
+    q1 = float(q1)
+    q3 = float(q3)
+
+    # Interquartile range measures the spread of the middle 50%.
+    iqr = float(q3 - q1)
+
+    # Calculate the arithmetic mean.
+    mean = float(np.mean(measured))
+
+    # Return the benchmark statistics.
+    return {
+        "n": n,
+        "median": median,
+        "q1": q1,
+        "q3": q3,
+        "iqr": iqr,
+        "mean": mean
+    }
 
 # Step 4 - choose_workers (not yet solved)
 # TODO: implement
