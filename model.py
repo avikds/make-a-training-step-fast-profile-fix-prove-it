@@ -478,8 +478,86 @@ def choose_workers(config, candidates=(1, 2, 4, 8, 16, 32)):
         "table": table
     }
 
-# Step 5 - pack_sequences (not yet solved)
-# TODO: implement
+# Step 5 - pack_sequences
+def pack_sequences(lengths, max_len):
+    """First-fit decreasing packing into rows of max_len, with offsets and padding shares."""
+
+    # Clip sequences that exceed the maximum permitted length.
+    clipped_lengths = [
+        min(length, max_len) for length in lengths
+    ]
+
+    # Sort samples from longest to shortest.
+    # Original index provides deterministic ordering for equal lengths.
+    sorted_indices = sorted(
+        range(len(lengths)),
+        key=lambda i: (-clipped_lengths[i], i)
+    )
+
+    # Store packed rows and the number of tokens used in each row.
+    rows = []
+    row_used = []
+
+    # Apply First-Fit Decreasing packing.
+    for index in sorted_indices:
+        length = clipped_lengths[index]
+
+        # Find the first existing row with sufficient remaining capacity.
+        placed = False
+
+        for row_index in range(len(rows)):
+            if row_used[row_index] + length <= max_len:
+                rows[row_index].append(index)
+                row_used[row_index] += length
+                placed = True
+                break
+
+        # Create a new row if no existing row has enough space.
+        if not placed:
+            rows.append([index])
+            row_used.append(length)
+
+    # Calculate cumulative token offsets for each packed row.
+    cu_seqlens = []
+
+    for row in rows:
+        offsets = [0]
+        cumulative = 0
+
+        for index in row:
+            cumulative += clipped_lengths[index]
+            offsets.append(cumulative)
+
+        cu_seqlens.append(offsets)
+
+    # Calculate the number of tokens before and after packing.
+    tokens_before = len(lengths) * max_len
+    tokens_after = len(rows) * max_len
+
+    # Total real tokens, including sequences clipped to max_len.
+    real_tokens = sum(clipped_lengths)
+
+    # Calculate padding proportions before packing.
+    pad_share_before = (
+        (tokens_before - real_tokens) / tokens_before
+        if tokens_before > 0 else 0.0
+    )
+
+    # Calculate padding proportions after packing.
+    pad_share_after = (
+        (tokens_after - real_tokens) / tokens_after
+        if tokens_after > 0 else 0.0
+    )
+
+    # Return packing information and padding statistics.
+    return {
+        "rows": rows,
+        "cu_seqlens": cu_seqlens,
+        "tokens_before": tokens_before,
+        "tokens_after": tokens_after,
+        "pad_share_before": float(pad_share_before),
+        "pad_share_after": float(pad_share_after)
+    }
 
 # Step 6 - fuse_elementwise (not yet solved)
 # TODO: implement
