@@ -748,8 +748,158 @@ def bucket_allreduce(grads, link=LINK, cap_mb=25.0):
 
     return buckets
 
-# Step 9 - plan_parallelism (not yet solved)
-# TODO: implement
+# Step 9 - plan_parallelism
+def plan_parallelism(model, cluster):
+    """Evaluate tensor-parallel, data-parallel and ZeRO plans, retaining those that fit."""
+
+    # Convert the model's parameter count from billions to individual parameters.
+    P = model["params_b"] * 1e9
+
+    # Extract cluster specifications.
+    gpus = cluster["gpus"]
+    gpus_per_node = cluster["gpus_per_node"]
+    mem_gb = cluster["mem_gb"]
+    tflops = cluster["tflops"]
+    intra_gbs = cluster["intra_gbs"]
+    inter_gbs = cluster["inter_gbs"]
+    tp_penalty = cluster["tp_penalty"]
+
+    # Tensor-parallel communication size belongs to the model.
+    tp_gb = model["tp_gb"]
+
+    # Store feasible plans with their unrounded metrics for sorting.
+    fits_internal = []
+
+    # Store plans that exceed available GPU memory.
+    rejected = []
+
+    # Evaluate the supported tensor-parallel sizes.
+    for tp in (1, 2, 4, 8):
+
+        # TP must divide the GPU count and remain within one node.
+        if gpus % tp != 0 or tp > gpus_per_node:
+            continue
+
+        # Calculate the data-parallel degree.
+        dp = gpus // tp
+
+        # Try ZeRO stages 0-3 when DP > 1.
+        # With DP == 1, only stage 0 is applicable.
+        zero_stages = range(4) if dp > 1 else (0,)
+
+        for zero in zero_stages:
+
+            # Calculate memory requirements in bytes.
+            weights = 2 * P / tp
+            gradients = 2 * P / tp
+            optimizer_states = 12 * P / tp
+
+            # ZeRO stage 3 partitions model weights across DP ranks.
+            if zero >= 3:
+                weights /= dp
+
+            # ZeRO stages 2 and 3 partition gradients.
+            if zero >= 2:
+                gradients /= dp
+
+            # ZeRO stages 1, 2 and 3 partition optimizer states.
+            if zero >= 1:
+                optimizer_states /= dp
+
+            # Calculate total GPU memory in GB.
+            memory_gb = (
+                (weights + gradients + optimizer_states) / 1e9
+                + model["act_gb"] / tp
+            )
+
+            # Calculate computation time in milliseconds.
+            compute_ms = (
+                model["step_tflop"]
+                / (gpus * tflops)
+                * 1000
+                * (1 + tp_penalty * (tp - 1))
+            )
+
+            # Calculate tensor-parallel communication time.
+            if tp == 1:
+                tensor_parallel_ms = 0.0
+            else:
+                tensor_parallel_ms = (
+                    tp_gb
+                    * 2 * (tp - 1) / tp
+                    / intra_gbs
+                    * 1000
+                )
+
+            # Calculate data-parallel communication volume in bytes.
+            B = 2 * P / tp
+
+            # ZeRO stage 3 has an additional 1.5x communication cost.
+            if zero == 3:
+                B *= 1.5
+
+            # Calculate data-parallel communication time.
+            if dp == 1:
+                data_parallel_ms = 0.0
+            else:
+                data_parallel_ms = (
+                    2 * (dp - 1) / dp
+                    * B / (inter_gbs * 1e9)
+                    * 1000
+                )
+
+            # Calculate the total estimated training-step time.
+            step_ms = (
+                compute_ms
+                + tensor_parallel_ms
+                + data_parallel_ms
+            )
+
+            # Check whether the plan fits into GPU memory.
+            if memory_gb <= mem_gb:
+
+                # Keep unrounded metrics for accurate sorting.
+                fits_internal.append((
+                    step_ms,
+                    memory_gb,
+                    tp,
+                    zero
+                ))
+
+            else:
+                # Record rejected plans in the required format.
+                rejected.append((
+                    tp,
+                    zero,
+                    f"needs {memory_gb:.1f} GB"
+                ))
+
+    # Sort by exact step time, memory requirement, TP size and ZeRO stage.
+    fits_internal.sort(
+        key=lambda plan: (
+            plan[0],
+            plan[1],
+            plan[2],
+            plan[3]
+        )
+    )
+
+    # Construct the final output with numerical values rounded to 2 decimals.
+    fits = [
+        {
+            "tp": tp,
+            "dp": gpus // tp,
+            "zero": zero,
+            "memory_gb": round(memory_gb, 2),
+            "step_ms": round(step_ms, 2)
+        }
+        for step_ms, memory_gb, tp, zero in fits_internal
+    ]
+
+    return {
+        "fits": fits,
+        "rejected": rejected
+    }
 
 # Step 10 - compare_runs (not yet solved)
 # TODO: implement
