@@ -613,8 +613,71 @@ def fuse_elementwise(ops):
 
     return fused_ops
 
-# Step 7 - dynamic_loss_scale (not yet solved)
-# TODO: implement
+# Step 7 - dynamic_loss_scale
+def dynamic_loss_scale(grad_stats, init_scale=65536.0, growth_interval=4,
+                       growth=2.0, backoff=0.5,
+                       fp16_max=65504.0, fp16_min=2.0 ** -24):
+    """Simulate a dynamic FP16 loss scaler with overflow protection and scale growth."""
+
+    # Initialize the loss scale and consecutive clean-step counter.
+    scale = float(init_scale)
+    clean_steps = 0
+
+    # Store the scale used for each training step.
+    scales = []
+
+    # Track training steps skipped due to gradient overflow.
+    skipped = []
+
+    # Count steps where small gradients underflow to zero.
+    underflow_steps = 0
+
+    # Process gradient statistics for each training step.
+    for step_index, (largest, smallest) in enumerate(grad_stats):
+
+        # Record the scale applied during this step.
+        scales.append(scale)
+
+        # Calculate the largest gradient after loss scaling.
+        scaled_largest = largest * scale
+
+        # Check whether the scaled gradient exceeds FP16's maximum.
+        if scaled_largest > fp16_max:
+
+            # Skip the optimizer update because of overflow.
+            skipped.append(step_index)
+
+            # Reduce the loss scale.
+            scale *= backoff
+
+            # Reset consecutive clean steps.
+            clean_steps = 0
+
+        else:
+            # The step is applied successfully.
+            scaled_smallest = smallest * scale
+
+            # Detect whether the smallest gradient underflows.
+            if scaled_smallest < fp16_min:
+                underflow_steps += 1
+
+            # Count this non-overflow step toward scale growth.
+            clean_steps += 1
+
+            # Increase the scale after enough consecutive clean steps.
+            if clean_steps >= growth_interval:
+                scale *= growth
+
+                # Reset the clean-step counter after scale growth.
+                clean_steps = 0
+
+    # Return the complete loss-scaling statistics.
+    return {
+        "scales": scales,
+        "skipped": skipped,
+        "underflow_steps": underflow_steps,
+        "final_scale": float(scale)
+    }
 
 # Step 8 - bucket_allreduce (not yet solved)
 # TODO: implement

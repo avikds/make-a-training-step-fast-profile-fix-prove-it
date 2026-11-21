@@ -16,7 +16,7 @@ python scaffold.py
 - [x] **4.** choose_workers
 - [x] **5.** pack_sequences
 - [x] **6.** fuse_elementwise
-- [ ] **7.** dynamic_loss_scale
+- [x] **7.** dynamic_loss_scale
 - [ ] **8.** bucket_allreduce
 - [ ] **9.** plan_parallelism
 - [ ] **10.** compare_runs
