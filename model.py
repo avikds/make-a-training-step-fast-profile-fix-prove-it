@@ -230,8 +230,160 @@ def op_cost(op, gpu=GPU):
         "intensity": intensity
     }
 
-# Step 2 - analyze_trace (not yet solved)
-# TODO: implement
+# Step 2 - analyze_trace
+def analyze_trace(trace, launch_us=5.0, top=3):
+    """Analyze GPU activity, idle time, communication and performance bottlenecks."""
+
+    # Handle an empty trace.
+    if not trace:
+        return {
+            "step_us": 0.0,
+            "gpu_busy_us": 0.0,
+            "gpu_idle_share": 0.0,
+            "data_wait_us": 0.0,
+            "exposed_comm_us": 0.0,
+            "small_kernels": 0,
+            "top_groups": [],
+            "verdict": "compute_bound"
+        }
+
+    # Calculate total step duration.
+    first_start = min(event["start"] for event in trace)
+    last_end = max(event["end"] for event in trace)
+    step_us = last_end - first_start
+
+    # Calculate the union length of intervals.
+    # Overlapping intervals are counted only once.
+    def union_length(intervals):
+        if not intervals:
+            return 0.0
+
+        intervals = sorted(intervals)
+
+        total = 0.0
+        current_start, current_end = intervals[0]
+
+        for start, end in intervals[1:]:
+            if start <= current_end:
+                current_end = max(current_end, end)
+            else:
+                total += current_end - current_start
+                current_start, current_end = start, end
+
+        total += current_end - current_start
+
+        return float(total)
+
+    # Separate GPU kernel and communication events.
+    kernels = [
+        event for event in trace
+        if event["kind"] == "kernel"
+    ]
+
+    collectives = [
+        event for event in trace
+        if event["kind"] == "collective"
+    ]
+
+    # Extract GPU kernel execution intervals.
+    kernel_intervals = [
+        (event["start"], event["end"])
+        for event in kernels
+    ]
+
+    # Total GPU busy time, excluding double-counted overlaps.
+    gpu_busy_us = union_length(kernel_intervals)
+
+    # Fraction of the training step during which the GPU is idle.
+    gpu_idle_share = (
+        (step_us - gpu_busy_us) / step_us
+        if step_us > 0 else 0.0
+    )
+
+    # Calculate total data-loader waiting time.
+    # Initializing with 0.0 ensures a floating-point result
+    # even when there are no data-loader wait events.
+    data_wait_us = sum(
+        (
+            event["end"] - event["start"]
+            for event in trace
+            if event["kind"] == "dataloader_wait"
+        ),
+        0.0
+    )
+
+    # Extract collective execution intervals.
+    collective_intervals = [
+        (event["start"], event["end"])
+        for event in collectives
+    ]
+
+    # Combine kernel and collective intervals.
+    combined_intervals = kernel_intervals + collective_intervals
+
+    # Calculate the union of all kernel and collective intervals.
+    combined_busy_us = union_length(combined_intervals)
+
+    # Exposed communication is collective time not overlapped by kernels.
+    exposed_comm_us = max(
+        0.0,
+        combined_busy_us - gpu_busy_us
+    )
+
+    # Count kernels shorter than the launch overhead.
+    # A kernel exactly equal to launch_us is not counted.
+    small_kernels = sum(
+        1
+        for event in kernels
+        if (event["end"] - event["start"]) < launch_us
+    )
+
+    # Accumulate execution time for every kernel group.
+    group_times = {}
+
+    for event in kernels:
+        group = event["group"]
+        duration = event["end"] - event["start"]
+
+        group_times[group] = (
+            group_times.get(group, 0.0) + duration
+        )
+
+    # Sort groups by rounded execution time (descending),
+    # using group name as the tie-breaker.
+    top_groups = sorted(
+        [
+            (group, round(duration, 3))
+            for group, duration in group_times.items()
+        ],
+        key=lambda item: (-item[1], item[0])
+    )[:top]
+
+    # Determine the primary performance bottleneck.
+    # Apply the rules in the required priority order.
+    if step_us > 0 and data_wait_us >= 0.2 * step_us:
+        verdict = "input_bound"
+
+    elif step_us > 0 and exposed_comm_us >= 0.2 * step_us:
+        verdict = "communication_bound"
+
+    elif gpu_idle_share >= 0.2:
+        verdict = "launch_bound"
+
+    else:
+        verdict = "compute_bound"
+
+    # Return all required profiling metrics.
+    return {
+        "step_us": step_us,
+        "gpu_busy_us": gpu_busy_us,
+        "gpu_idle_share": gpu_idle_share,
+        "data_wait_us": data_wait_us,
+        "exposed_comm_us": exposed_comm_us,
+        "small_kernels": small_kernels,
+        "top_groups": top_groups,
+        "verdict": verdict
+    }
 
 # Step 3 - summarize_runs (not yet solved)
 # TODO: implement
