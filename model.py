@@ -559,8 +559,59 @@ def pack_sequences(lengths, max_len):
         "pad_share_after": float(pad_share_after)
     }
 
-# Step 6 - fuse_elementwise (not yet solved)
-# TODO: implement
+# Step 6 - fuse_elementwise
+def fuse_elementwise(ops):
+    """Merge runs of adjacent same-size elementwise ops in one phase into single kernels."""
+
+    # Store the fused operations in a new list.
+    fused_ops = []
+
+    for op in ops:
+
+        # Check whether the current operation can be merged
+        # with the immediately preceding operation.
+        if (
+            fused_ops
+            and op["kind"] == "elementwise"
+            and fused_ops[-1]["kind"] == "elementwise"
+            and fused_ops[-1]["size"] == op["size"]
+            and fused_ops[-1]["phase"] == op["phase"]
+        ):
+            previous = fused_ops[-1]
+
+            # Combine operation names and groups.
+            previous["name"] = previous["name"] + "+" + op["name"]
+            previous["group"] = previous["group"] + "+" + op["group"]
+
+            # Eliminate the intermediate memory read.
+            # The output of the previous operation stays in registers.
+            previous["reads"] = previous["reads"] + op["reads"] - 1
+
+            # Recalculate total memory traffic.
+            previous["bytes"] = (
+                (previous["reads"] + 1) * previous["size"]
+            )
+
+            # Add the floating-point operations.
+            previous["flops"] += op["flops"]
+
+            # Preserve gradient metadata in the original order.
+            previous["grads"] = (
+                previous.get("grads", []) + op.get("grads", [])
+            )
+
+        else:
+            # Copy the operation so the original input is not modified.
+            new_op = dict(op)
+
+            # Make an independent copy of the gradients list.
+            if "grads" in new_op:
+                new_op["grads"] = list(new_op["grads"])
+
+            # Start a new fused operation or preserve a non-elementwise op.
+            fused_ops.append(new_op)
+
+    return fused_ops
 
 # Step 7 - dynamic_loss_scale (not yet solved)
 # TODO: implement
