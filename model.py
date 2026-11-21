@@ -679,8 +679,74 @@ def dynamic_loss_scale(grad_stats, init_scale=65536.0, growth_interval=4,
         "final_scale": float(scale)
     }
 
-# Step 8 - bucket_allreduce (not yet solved)
-# TODO: implement
+# Step 8 - bucket_allreduce
+def bucket_allreduce(grads, link=LINK, cap_mb=25.0):
+    """Group gradients into buckets in backward order and schedule one all-reduce per bucket."""
+
+    # Convert the bucket capacity from MB to bytes.
+    cap_bytes = cap_mb * 1e6
+
+    # Store the resulting communication buckets.
+    buckets = []
+
+    # Track gradients and total bytes in the current bucket.
+    current_params = []
+    current_bytes = 0
+    current_ready = 0.0
+
+    # The previous all-reduce must finish before the next one starts.
+    previous_end = 0.0
+
+    def flush_bucket():
+        """Schedule the current bucket's all-reduce operation."""
+        nonlocal current_params, current_bytes, current_ready, previous_end
+
+        if not current_params:
+            return
+
+        # Start only after every gradient in the bucket is ready
+        # and the preceding all-reduce has finished.
+        start = max(current_ready, previous_end)
+
+        # Calculate the communication duration for this bucket.
+        end = start + allreduce_us(current_bytes, link)
+
+        # Record the bucket details.
+        buckets.append({
+            "params": current_params,
+            "bytes": current_bytes,
+            "start": start,
+            "end": end
+        })
+
+        # Update the previous communication completion time.
+        previous_end = end
+
+        # Reset the current bucket.
+        current_params = []
+        current_bytes = 0
+        current_ready = 0.0
+
+    # Process gradients in their original backward-production order.
+    for grad in grads:
+        grad_bytes = grad["bytes"]
+
+        # Start a new bucket if adding this gradient would exceed capacity.
+        # A gradient larger than the capacity is allowed its own bucket.
+        if current_params and current_bytes + grad_bytes > cap_bytes:
+            flush_bucket()
+
+        # Add the gradient to the current bucket.
+        current_params.append(grad["name"])
+        current_bytes += grad_bytes
+
+        # Track when all gradients in this bucket are ready.
+        current_ready = max(current_ready, grad["ready"])
+
+    # Schedule any remaining gradients.
+    flush_bucket()
+
+    return buckets
 
 # Step 9 - plan_parallelism (not yet solved)
 # TODO: implement

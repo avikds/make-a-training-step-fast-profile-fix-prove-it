@@ -17,7 +17,7 @@ python scaffold.py
 - [x] **5.** pack_sequences
 - [x] **6.** fuse_elementwise
 - [x] **7.** dynamic_loss_scale
-- [ ] **8.** bucket_allreduce
+- [x] **8.** bucket_allreduce
 - [ ] **9.** plan_parallelism
 - [ ] **10.** compare_runs
 - [ ] **11.** speedup_report
