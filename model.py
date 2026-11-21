@@ -1013,6 +1013,45 @@ def speedup_report(steps, min_share=0.01):
         "did_not_matter": did_not_matter
     }
 
-# Step 12 - release_check (not yet solved)
-# TODO: implement
+# Step 12 - release_check
+def release_check(base_times, cand_times, base_loss, cand_loss,
+                  loss_tol=0.01, min_speedup=1.05, warmup=2):
+    """Ship only a candidate that is measurably faster without changing the loss."""
+
+    # Compare baseline and candidate benchmark results.
+    comparison = compare_runs(base_times, cand_times, warmup)
+
+    # Extract the measured speedup and statistical verdict.
+    speedup = comparison["speedup"]
+    verdict = comparison["verdict"]
+
+    # Collect release rejection reasons in the required order.
+    reasons = []
+
+    # Check whether the candidate is measurably faster.
+    if verdict != "faster":
+        reasons.append(
+            "not faster beyond the noise: " + verdict
+        )
+
+    # Check whether the candidate meets the minimum speedup.
+    if speedup is not None and speedup < min_speedup:
+        reasons.append(
+            f"speedup {speedup:.3f} is below {min_speedup}"
+        )
+
+    # Check whether the training loss has changed beyond tolerance.
+    loss_change = cand_loss - base_loss
+
+    if abs(loss_change) > loss_tol:
+        reasons.append(
+            f"loss changed by {loss_change:+.4f}"
+        )
+
+    # Approve the candidate only when there are no rejection reasons.
+    return {
+        "ship": len(reasons) == 0,
+        "speedup": round(speedup, 4) if speedup is not None else None,
+        "reasons": reasons
+    }
 

@@ -21,7 +21,7 @@ python scaffold.py
 - [x] **9.** plan_parallelism
 - [x] **10.** compare_runs
 - [x] **11.** speedup_report
-- [ ] **12.** release_check
+- [x] **12.** release_check
 
 ---
 
