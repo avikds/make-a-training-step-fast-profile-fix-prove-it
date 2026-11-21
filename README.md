@@ -20,7 +20,7 @@ python scaffold.py
 - [x] **8.** bucket_allreduce
 - [x] **9.** plan_parallelism
 - [x] **10.** compare_runs
-- [ ] **11.** speedup_report
+- [x] **11.** speedup_report
 - [ ] **12.** release_check
 
 ---

@@ -944,8 +944,74 @@ def compare_runs(base_times, cand_times, warmup=2):
         "cand": cand
     }
 
-# Step 11 - speedup_report (not yet solved)
-# TODO: implement
+# Step 11 - speedup_report
+def speedup_report(steps, min_share=0.01):
+    """Attribute the end-to-end speedup to each fix in the order they were applied."""
+
+    # The first entry represents the baseline configuration.
+    baseline_time = steps[0][1]
+
+    # The final entry represents the fully optimized configuration.
+    final_time = steps[-1][1]
+
+    # Total time saved across all optimizations.
+    total_saved = baseline_time - final_time
+
+    # Store the contribution of each individual optimization.
+    fixes = []
+
+    # Track optimizations that contributed less than the minimum threshold.
+    did_not_matter = []
+
+    # Process each optimization, excluding the baseline.
+    for i in range(1, len(steps)):
+        label, after = steps[i]
+
+        # The preceding step's time is the time before this optimization.
+        before = steps[i - 1][1]
+
+        # Calculate the time saved by this optimization.
+        saved_us = before - after
+
+        # Calculate its share of the total end-to-end time saved.
+        # Return 0.0 when the total time saved is zero.
+        share = (
+            saved_us / total_saved
+            if total_saved != 0 else 0.0
+        )
+
+        # Calculate the speedup introduced by this optimization.
+        speedup = before / after
+
+        # Record the optimization's performance contribution.
+        fixes.append({
+            "fix": label,
+            "saved_us": saved_us,
+            "share": share,
+            "speedup": speedup
+        })
+
+        # Identify optimizations whose savings are below the threshold.
+        if saved_us < min_share * before:
+            did_not_matter.append(label)
+
+    # Calculate the overall end-to-end speedup.
+    overall_speedup = baseline_time / final_time
+
+    # Identify the optimization with the largest time savings.
+    # max() preserves the first occurrence when values are tied.
+    biggest = (
+        max(fixes, key=lambda item: item["saved_us"])["fix"]
+        if fixes else None
+    )
+
+    # Return the complete performance attribution report.
+    return {
+        "speedup": overall_speedup,
+        "fixes": fixes,
+        "biggest": biggest,
+        "did_not_matter": did_not_matter
+    }
 
 # Step 12 - release_check (not yet solved)
 # TODO: implement
