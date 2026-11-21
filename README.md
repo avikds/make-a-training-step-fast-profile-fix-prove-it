@@ -13,7 +13,7 @@ python scaffold.py
 - [x] **1.** op_cost
 - [x] **2.** analyze_trace
 - [x] **3.** summarize_runs
-- [ ] **4.** choose_workers
+- [x] **4.** choose_workers
 - [ ] **5.** pack_sequences
 - [ ] **6.** fuse_elementwise
 - [ ] **7.** dynamic_loss_scale

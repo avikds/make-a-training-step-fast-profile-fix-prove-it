@@ -434,8 +434,49 @@ def summarize_runs(times, warmup=2):
         "mean": mean
     }
 
-# Step 4 - choose_workers (not yet solved)
-# TODO: implement
+# Step 4 - choose_workers
+def choose_workers(config, candidates=(1, 2, 4, 8, 16, 32)):
+    """Find the fewest data-loader workers that eliminate data wait."""
+
+    table = []
+    best_workers = None
+
+    # Evaluate each candidate in the specified order.
+    for workers in candidates:
+
+        # Copy the original configuration to avoid modifying it.
+        candidate_config = config.copy()
+        candidate_config["workers"] = workers
+
+        # Simulate one training step using this worker count.
+        result = run_step(candidate_config)
+
+        # Extract the total data-loader waiting time from the trace.
+        wait_us = sum(
+            (
+                event["end"] - event["start"]
+                for event in result["trace"]
+                if event["kind"] == "dataloader_wait"
+            ),
+            0.0
+        )
+
+        # Record worker count, step duration and data-loading wait.
+        table.append((
+            workers,
+            result["step_us"],
+            wait_us
+        ))
+
+        # Identify the first candidate with zero data-loading wait.
+        if wait_us == 0 and best_workers is None:
+            best_workers = workers
+
+    # Return the optimal worker count and results for all candidates.
+    return {
+        "workers": best_workers,
+        "table": table
+    }
 
 # Step 5 - pack_sequences (not yet solved)
 # TODO: implement
